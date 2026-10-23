@@ -1,6 +1,6 @@
 aws_account_id    = "108782089926" # REPLACE
 aws_region        = "us-east-1"
 state_bucket_name = "huy-cc-terraform-state"
-github_repository = "huynguyenquangce/cc-infra"
+github_repository = "huynguyenquangce@129473045/cc-infra@1429656653"
 # One GitHub OIDC provider per AWS account. Supply ARN if it already exists.
 # existing_github_oidc_provider_arn = "arn:aws:iam::108782089926:oidc-provider/token.actions.githubusercontent.com"

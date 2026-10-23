@@ -70,7 +70,7 @@ thay thế tên bucket hay Account ID trong cấu hình.
 cd bootstrap
 cp terraform.tfvars.example terraform.tfvars
 cp backend.hcl.example backend.hcl
-# Điền account, region, bucket name duy nhất toàn cầu, exact OWNER/REPO.
+# Điền account, region, bucket name và repository segment của GitHub OIDC sub.
 # Sửa backend.hcl cùng bucket/region, giữ key bootstrap/terraform.tfstate.
 terraform init
 terraform fmt -recursive ..
@@ -147,7 +147,7 @@ hardcode. PSK/config thiết bị lấy từ AWS console qua kênh được phé
 
 ## 3. GitHub Actions OIDC
 
-Đưa **nội dung cc-infra** lên root của repo riêng có đúng OWNER/REPO trong tfvars
+Đưa **nội dung cc-infra** lên root của repo riêng có đúng repository trong tfvars
 bootstrap. Workflow không dùng path prefix `cc-infra/`. Mặc định branch là `main`;
 nếu repo dùng tên khác, sửa workflows và branch restrictions cùng lúc.
 
@@ -229,7 +229,11 @@ Commerce cấu hình IPsec/BGP/MSS; kiểm tra tunnels, learned routes và traff
 mục 6. AWS provision thành công chưa đồng nghĩa VPN hai đầu đã hoạt động.
 
 Trust policy dùng `StringEquals` cho cả `aud=sts.amazonaws.com` và
-`sub=repo:OWNER/REPO:environment:networking`; không wildcard repo/branch.
+`sub=repo:OWNER@OWNER_ID/REPO@REPO_ID:environment:networking` với repo này.
+Giá trị `github_repository` trong bootstrap phải khớp phần repository của `sub`
+trong token GitHub. CloudTrail `AssumeRoleWithWebIdentity` ghi nhận giá trị này
+khi trust policy từ chối token. GitHub có thể dùng dạng cũ `OWNER/REPO`
+cho repo khác; không wildcard repo/branch.
 Role chỉ ghi `networking/terraform.tfstate` + lock tương ứng, không có quyền đọc
 bootstrap state hay sửa IAM. Networking mutation giới hạn AWS region; EC2 actions
 liệt kê tường minh nhưng vẫn quản lý được networking khác trong region vì nhiều
@@ -313,3 +317,31 @@ sau đó failback theo policy đã chốt. Terraform hiện chưa tạo test hos
 - [Terraform S3 backend: locking và IAM](https://developer.hashicorp.com/terraform/language/backend/s3)
 - [GitHub OIDC với AWS: audience, subject và Environment](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws)
 - [AWS provider VPN connection: crypto và sensitive state](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpn_connection)
+
+## Incident: SSM DescribeParameters AccessDenied sau networking apply
+
+Nếu VPN đã `Creation complete` nhưng job thất bại ở metadata của
+`/cc/networking/contract`, kiểm tra IAM role `cc-terraform-networking` có
+`ssm:DescribeParameters`. API này cần statement `Resource = "*"` vì không hỗ trợ
+resource-level permission; giới hạn `aws:RequestedRegion` theo region triển khai.
+Get/Put/Delete parameter vẫn giới hạn ở `/cc/networking/*`, không mở quyền đọc
+mọi parameter value. [AWS SSM IAM actions](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ssm.html)
+
+Sau khi sửa `modules/github-oidc/main.tf`, dùng AWS session local có quyền IAM,
+chạy từ root repo đang quản lý bootstrap state thật:
+
+```bash
+aws sts get-caller-identity
+terraform -chdir=bootstrap init -backend-config=backend.hcl
+terraform -chdir=bootstrap validate
+terraform -chdir=bootstrap plan -out=bootstrap.tfplan
+# Review: phải cập nhật IAM policy, không tạo lại bucket/VPN.
+terraform -chdir=bootstrap apply bootstrap.tfplan
+```
+
+Commit/push code sửa policy và chạy workflow networking `plan`, review rồi `apply`
+trên cùng S3 bucket/key/input. Đợi IAM propagation nếu vừa cập nhật role.
+VPN đã tạo không cần destroy để sửa quyền SSM. Apply có thể đã thành công một phần:
+giữ state và kiểm tra plan thực tế, không xóa state hoặc bật overwrite để né lỗi.
+Nếu lần sau có lỗi ParameterAlreadyExists, đối chiếu state/resource ownership trước
+khi quyết định import; không mặc định import parameter từ deployment khác.

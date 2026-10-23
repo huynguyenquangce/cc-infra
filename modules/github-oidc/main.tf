@@ -67,6 +67,14 @@ resource "aws_iam_role_policy" "networking" {
         Resource  = "*"
         Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
       },
+      # DescribeParameters lists metadata and does not support parameter-level ARNs.
+      # Keep value reads/writes scoped to /cc/networking/* in the next statement.
+      {
+        Effect    = "Allow"
+        Action    = ["ssm:DescribeParameters"]
+        Resource  = "*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.aws_region } }
+      },
       {
         Effect   = "Allow", Action = ["ssm:PutParameter", "ssm:GetParameter", "ssm:GetParameters", "ssm:DeleteParameter", "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource", "ssm:ListTagsForResource"]
         Resource = "arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter/cc/networking/*"

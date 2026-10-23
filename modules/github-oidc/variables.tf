@@ -1,9 +1,9 @@
 variable "repository" {
-  description = "Exact OWNER/REPO, case sensitive; no wildcards."
+  description = "Exact OIDC OWNER/REPO segment, including @IDs when GitHub uses immutable subjects; no wildcards."
   type        = string
   validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.repository))
-    error_message = "Use exact OWNER/REPO."
+    condition     = can(regex("^[A-Za-z0-9_.-]+(@[0-9]+)?/[A-Za-z0-9_.-]+(@[0-9]+)?$", var.repository))
+    error_message = "Use exact OWNER/REPO or OWNER@ID/REPO@ID from the GitHub OIDC subject."
   }
 }
 variable "existing_provider_arn" {
