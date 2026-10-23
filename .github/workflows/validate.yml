@@ -1,0 +1,27 @@
+name: Terraform validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        root: [bootstrap, live/networking]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.13.5
+          terraform_wrapper: false
+      - name: Initialize without AWS backend
+        working-directory: ${{ matrix.root }}
+        run: terraform init -backend=false -input=false
+      - name: Validate configuration and provider schema
+        working-directory: ${{ matrix.root }}
+        run: terraform validate -no-color

@@ -1,0 +1,11 @@
+**/.terraform/*
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/crash.log
+**/*.tfvars
+**/*.tfvars.json
+**/backend.hcl
+**/backend.tf.local
+!**/*.example
+# Commit .terraform.lock.hcl after a successful init for every root.
