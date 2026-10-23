@@ -242,7 +242,8 @@ API EC2 và read actions dùng Resource `*`. Đây chưa phải boundary theo VP
 Chạy workflow **Networking Terraform**, chọn `plan` để xem trước; sau review chọn
 `apply` ở cùng commit. Lần apply tạo **plan mới** rồi apply đúng saved plan trong
 cùng job. Environment approval diễn ra trước job, không nằm giữa plan/apply; xem
-lại plan mới trong log. Không có auto-apply khi push/PR và không có destroy action.
+lại plan mới trong log. Không có auto-apply/destroy khi push/PR. Workflow có thêm `plan-destroy` và
+`destroy` với xác nhận riêng; xem mục Destroy networking bên dưới.
 PR chỉ chạy `init -backend=false` + `validate`, không nhận AWS credential.
 Không upload binary plan/state vì có thể chứa PSK. Concurrency và S3 locking tránh
 hai lần chạy cùng ghi state. Workflow `plan` vẫn dùng role networking có quyền ghi;
@@ -345,3 +346,38 @@ VPN đã tạo không cần destroy để sửa quyền SSM. Apply có thể đ�
 giữ state và kiểm tra plan thực tế, không xóa state hoặc bật overwrite để né lỗi.
 Nếu lần sau có lỗi ParameterAlreadyExists, đối chiếu state/resource ownership trước
 khi quyết định import; không mặc định import parameter từ deployment khác.
+
+## Destroy networking bằng GitHub Actions
+
+Workflow hiện hỗ trợ cùng bốn operation như bản template `cc-infra`:
+
+| Operation | `destroy_confirmation` | Hành vi |
+|---|---|---|
+| `plan` | Để trống | Plan thường; không apply |
+| `apply` | Để trống | Plan thường mới rồi apply saved plan trong cùng job |
+| `plan-destroy` | Để trống | Plan xóa networking; chưa xóa tài nguyên |
+| `destroy` | `destroy-networking` | Destroy plan mới rồi apply saved plan trong cùng job |
+
+Trước khi xóa, xác nhận account/region/S3 key networking đúng và phối hợp downtime.
+Xử lý application ALB/ECS/Lambda/ENI hoặc dependency đang dùng VPC/subnet trước;
+networking dùng chung nên việc xóa ảnh hưởng mọi workload đang sử dụng nó.
+
+1. Push workflow mới lên `main`. Vào **Actions → Networking Terraform → Run workflow**,
+   chọn branch `main`, `operation=plan-destroy`, để trống confirmation; review plan.
+2. Giữ nguyên commit, GitHub variables và secret `NETWORKING_TFVARS`. Sau khi quyết
+   định thực thi, chạy lại `operation=destroy`, nhập chính xác `destroy-networking`.
+3. Duyệt Environment `networking` nếu có required reviewers; xem job/apply result.
+   Confirm sai hoặc thiếu sẽ fail trước checkout và assume AWS role.
+4. Sau khi xóa thành công, kiểm tra AWS không còn tài nguyên networking dự kiến.
+   Bootstrap bucket/OIDC/IAM còn nguyên; state object/versions vẫn được giữ lại.
+
+Destroy run tạo **plan mới**, không dùng lại binary plan của run preview. Approval
+của Environment nằm trước job, không giữa plan và execution. Không tự đổi secret
+sau preview. Không upload plan/state artifact, không xóa state để thay cho destroy.
+Concurrency và S3 locking dùng chung với plan/apply. Nếu job lỗi giữa chừng, giữ
+state, xử lý nguyên nhân rồi preview/execute lại. Apply sau destroy với cấu hình
+còn nguyên sẽ đề xuất tạo lại networking.
+
+Workflow không destroy bootstrap. Bucket có `prevent_destroy`/`force_destroy=false`;
+không gỡ protection để cleanup networking. Chưa chạy destroy trên AWS để kiểm thử
+thay đổi workflow này.

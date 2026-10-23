@@ -1,13 +1,19 @@
 name: Networking Terraform
+run-name: Networking ${{ inputs.operation }} by @${{ github.actor }}
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Inspect a plan or create a fresh plan and apply it
+        description: Plan, apply, preview destruction, or destroy shared networking
         type: choice
-        options: [plan, apply]
+        options: [plan, apply, plan-destroy, destroy]
         default: plan
         required: true
+      destroy_confirmation:
+        description: 'For destroy only, type exactly: destroy-networking'
+        type: string
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -33,6 +39,21 @@ jobs:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       STATE_BUCKET: ${{ vars.STATE_BUCKET }}
     steps:
+      - name: Validate operation and destroy confirmation
+        working-directory: ${{ runner.temp }}
+        env:
+          OPERATION: ${{ inputs.operation }}
+          DESTROY_CONFIRMATION: ${{ inputs.destroy_confirmation }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            plan|apply|plan-destroy|destroy) ;;
+            *) echo "Unsupported operation" >&2; exit 1 ;;
+          esac
+          if [[ "$OPERATION" == "destroy" && "$DESTROY_CONFIRMATION" != "destroy-networking" ]]; then
+            echo "Destroy requires confirmation: destroy-networking" >&2
+            exit 1
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -72,14 +93,24 @@ jobs:
             -backend-config="encrypt=true" \
             -backend-config="use_lockfile=true"
       - run: terraform validate -no-color
-      - name: Plan networking
+      - name: Create networking plan for the selected operation
+        env:
+          OPERATION: ${{ inputs.operation }}
         run: |
-          terraform plan -input=false -lock-timeout=5m -no-color \
+          set -euo pipefail
+          plan_options=()
+          case "$OPERATION" in
+            plan|apply) ;;
+            plan-destroy|destroy) plan_options+=(-destroy) ;;
+            *) echo "Unsupported operation" >&2; exit 1 ;;
+          esac
+          terraform plan "${plan_options[@]}" -input=false -lock-timeout=5m -no-color \
             -var="aws_account_id=$AWS_ACCOUNT_ID" \
             -var="aws_region=$AWS_REGION" -out=networking.tfplan
-      - name: Apply the plan from this run
-        if: inputs.operation == 'apply'
+      - name: Execute the saved plan from this run
+        if: inputs.operation == 'apply' || inputs.operation == 'destroy'
         run: terraform apply -input=false -lock-timeout=5m -no-color networking.tfplan
       - name: Remove local plan and variables
         if: always()
-        run: rm -f networking.tfplan terraform.tfvars
+        working-directory: ${{ github.workspace }}
+        run: rm -f live/networking/networking.tfplan live/networking/terraform.tfvars
