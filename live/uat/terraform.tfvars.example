@@ -1,0 +1,29 @@
+aws_account_id = "123456789012" # REPLACE
+aws_region = "us-east-1"
+domain_name = "api-uat.REPLACE.example.com"
+# Stage 1: apply with false, send dns_validation_records to Commerce DNS team.
+# Stage 2: once certificate is Issued and public networking is ready, set true.
+enable_alb = false
+# Alternatively supply an already-issued ACM certificate covering domain_name:
+# existing_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE"
+# Fill verified backend IPs, not the public IPs of VPN gateways. No IP is invented.
+# All targets use HTTP 9010. Container port can stay 8000 behind host mapping 9010:8000.
+backend_targets = {
+  # server-1 = "REPLACE_PRIVATE_IP_1"
+  # server-2 = "REPLACE_PRIVATE_IP_2"
+  # server-3 = "REPLACE_PRIVATE_IP_3"
+  # server-4 = "REPLACE_PRIVATE_IP_4"
+}
+# Supply recipients or existing SNS ARNs before enable_alb=true.
+alert_emails = []
+additional_alarm_action_arns = []
+allowed_client_cidrs = ["0.0.0.0/0"] # Restrict UAT to team/public egress CIDRs if needed.
+enable_deletion_protection = false
+# Non-empty log buckets are retained unless you explicitly opt into deleting logs.
+force_destroy_logs = false
+log_retention_days = 30
+idle_timeout_seconds = 60
+health_check_path = "/health" # Not /api/health. Currently liveness, not full readiness.
+minimum_healthy_targets = 1 # Set according to actual active/standby backend policy.
+error_count_threshold = 5
+latency_p95_seconds = 2

@@ -1,0 +1,140 @@
+name: API Proxy Terraform
+run-name: API Proxy ${{ inputs.environment }} ${{ inputs.operation }} by @${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Application environment (uses its own IAM role and S3 state)
+        type: choice
+        options: [uat, production]
+        required: true
+        default: uat
+      operation:
+        description: Plan, apply, preview destruction, or destroy this API Proxy environment
+        type: choice
+        options: [plan, apply, plan-destroy, destroy]
+        default: plan
+        required: true
+      destroy_confirmation:
+        description: 'For destroy, type destroy-uat or destroy-production to match the environment'
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: cc-terraform-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  application:
+    if: github.ref == 'refs/heads/main' && contains(fromJSON('["uat", "production"]'), inputs.environment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: live/${{ inputs.environment }}
+        shell: bash
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      DEPLOY_ENV: ${{ inputs.environment }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      STATE_BUCKET: ${{ vars.STATE_BUCKET }}
+    steps:
+      - name: Validate operation and destroy confirmation
+        working-directory: ${{ runner.temp }}
+        env:
+          OPERATION: ${{ inputs.operation }}
+          DESTROY_CONFIRMATION: ${{ inputs.destroy_confirmation }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_ENV" in
+            uat|production) ;;
+            *) echo "Unsupported environment" >&2; exit 1 ;;
+          esac
+          case "$OPERATION" in
+            plan|apply|plan-destroy|destroy) ;;
+            *) echo "Unsupported operation" >&2; exit 1 ;;
+          esac
+          if [[ "$OPERATION" == "destroy" && "$DESTROY_CONFIRMATION" != "destroy-$DEPLOY_ENV" ]]; then
+            echo "Destroy requires confirmation: destroy-$DEPLOY_ENV" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.13.5
+          terraform_wrapper: false
+      - name: Check required configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          TFVARS_HCL: ${{ secrets.API_PROXY_TFVARS }}
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set AWS_REGION}"
+          : "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID}"
+          : "${STATE_BUCKET:?Set STATE_BUCKET}"
+          : "${ROLE_ARN:?Set AWS_ROLE_ARN}"
+          : "${TFVARS_HCL:?Set API_PROXY_TFVARS}"
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo "AWS_ACCOUNT_ID must contain 12 digits" >&2; exit 1; }
+          [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]] || { echo "Invalid AWS_REGION" >&2; exit 1; }
+          [[ "$STATE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "STATE_BUCKET must be a bucket name, without s3:// or a path" >&2; exit 1; }
+          [[ "$ROLE_ARN" == "arn:aws:iam::$AWS_ACCOUNT_ID:role/cc-terraform-$DEPLOY_ENV" ]] || { echo "AWS_ROLE_ARN does not match this account/environment" >&2; exit 1; }
+          umask 077
+          printf '%s\n' "$TFVARS_HCL" > terraform.tfvars
+      - name: Assume application role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 3600
+          role-session-name: cc-${{ inputs.environment }}-${{ github.run_id }}
+          unset-current-credentials: true
+      - name: Initialize S3 backend
+        run: |
+          set -euo pipefail
+          terraform init -input=false -lockfile=readonly \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="key=$DEPLOY_ENV/terraform.tfstate" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+      - run: terraform validate -no-color
+      - name: Create API Proxy plan for the selected operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          plan_options=()
+          case "$OPERATION" in
+            plan|apply) ;;
+            plan-destroy|destroy) plan_options+=(-destroy) ;;
+            *) echo "Unsupported operation" >&2; exit 1 ;;
+          esac
+          terraform plan "${plan_options[@]}" -input=false -lock-timeout=5m -no-color \
+            -var="aws_account_id=$AWS_ACCOUNT_ID" \
+            -var="aws_region=$AWS_REGION" -out=api-proxy.tfplan
+      - name: Check ALB deletion protection before executing changes
+        if: inputs.operation == 'apply' || inputs.operation == 'destroy'
+        run: python3 ../../scripts/check-terraform-plan.py api-proxy.tfplan
+      - name: Execute the saved plan from this run
+        if: inputs.operation == 'apply' || inputs.operation == 'destroy'
+        run: terraform apply -input=false -lock-timeout=5m -no-color api-proxy.tfplan
+      - name: Show certificate validation and application outputs
+        if: inputs.operation == 'apply'
+        run: |
+          terraform output -json dns_validation_records
+          terraform output -json api_proxy
+      - name: Remove local plan and variables
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          rm -f "live/$DEPLOY_ENV/api-proxy.tfplan" "live/$DEPLOY_ENV/terraform.tfvars"

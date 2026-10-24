@@ -17,3 +17,12 @@ customer_gateways = {
 phase1_lifetime_seconds = 28800 # Proposed AWS defaults: confirm against device contract.
 phase2_lifetime_seconds = 3600
 alarm_action_arns       = [] # Supply existing same-region SNS topic ARN(s) for notifications.
+
+# Proposed ALB allocation: confirm no overlap with actual AWS/Commerce networks.
+# Copy into your real networking tfvars AND NETWORKING_TFVARS secret to enable.
+public_subnets = {
+  uat-alb-a = { cidr = "10.0.100.0/24", availability_zone = "us-east-1a", environment = "uat" }
+  uat-alb-b = { cidr = "10.0.101.0/24", availability_zone = "us-east-1b", environment = "uat" }
+  production-alb-a = { cidr = "10.0.110.0/24", availability_zone = "us-east-1a", environment = "production" }
+  production-alb-b = { cidr = "10.0.111.0/24", availability_zone = "us-east-1b", environment = "production" }
+}

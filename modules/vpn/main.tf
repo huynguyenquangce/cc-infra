@@ -1,8 +1,10 @@
+# AWS VPN gateway attached to the shared VPC.
 resource "aws_vpn_gateway" "this" {
   vpc_id          = var.vpc_id
   amazon_side_asn = var.amazon_side_asn
   tags            = { Name = "cc-shared-vgw" }
 }
+# Customer VPN endpoint configuration: public IP and BGP ASN.
 resource "aws_customer_gateway" "this" {
   for_each   = var.customer_gateways
   ip_address = each.value.ip_address
@@ -16,11 +18,13 @@ resource "aws_customer_gateway" "this" {
     }
   }
 }
+# Store VPN IPsec logs for connection diagnostics and troubleshooting.
 resource "aws_cloudwatch_log_group" "vpn" {
   for_each          = var.customer_gateways
   name              = "/aws/vendedlogs/cc/vpn/${each.key}"
   retention_in_days = 90
 }
+# Create a Site-to-Site VPN connection with two tunnels and the agreed cryptographic settings.
 resource "aws_vpn_connection" "this" {
   for_each            = var.customer_gateways
   vpn_gateway_id      = aws_vpn_gateway.this.id
@@ -66,6 +70,7 @@ resource "aws_vpn_connection" "this" {
   }
   tags = { Name = "cc-${each.key}" }
 }
+# Propagate BGP-learned VPN routes into the route tables supplied by the networking root.
 resource "aws_vpn_gateway_route_propagation" "private" {
   for_each       = var.route_table_ids
   vpn_gateway_id = aws_vpn_gateway.this.id
@@ -79,6 +84,7 @@ locals {
     }
   }]...)
 }
+# Alert when a VPN tunnel is down or monitoring data is missing.
 resource "aws_cloudwatch_metric_alarm" "tunnel_down" {
   for_each            = local.tunnels
   alarm_name          = "cc-vpn-${each.key}-down"

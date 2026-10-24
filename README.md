@@ -1,38 +1,48 @@
 # cc-infra — networking / VPN trước
 
+[Đi tới runbook ALB API Proxy UAT/Production](#api-proxy--uat-và-production-alb--vpn--http-9010)
+
 Terraform cho AWS Commerce Casino, dựa trên `CLAUDE.md`, `huy-knowledge.md` và
-`codex-knowledge.md` ở workspace cha. Hiện chỉ có bootstrap và networking/VPN.
-Chưa tạo application, ECS, Lambda, ALB hay môi trường staging/prod.
+`codex-knowledge.md` ở workspace cha. Bootstrap/networking hiện có được mở rộng với hai application root.
+Đã có ALB API Proxy cho UAT/Production (xem mục API Proxy cuối README); chưa có ECS/MCP Server hay Lambda proxy.
 
 ## State và cấu trúc
 
+Trong mỗi module/root, resource, data source và module calls được gom trong
+`main.tf`, có comment giải thích mục đích. `variables.tf`, `outputs.tf`,
+`providers.tf`, `versions.tf` và `backend.tf` vẫn tách riêng theo chức năng.
+
 | Root | S3 key | Quản lý |
 |---|---|---|
-| `bootstrap/` | `bootstrap/terraform.tfstate` | S3 state bucket, GitHub OIDC provider, IAM role networking |
+| `bootstrap/` | `bootstrap/terraform.tfstate` | S3 state bucket, GitHub OIDC provider, IAM roles networking/UAT/Production |
 | `live/networking/` | `networking/terraform.tfstate` | VPC, private subnets, route tables, VGW, CGW, VPN, logs/alarms, SSM contract |
-| Tương lai: `live/staging/` | `staging/terraform.tfstate` | Application staging/UAT |
-| Tương lai: `live/prod/` | `prod/terraform.tfstate` | Application production |
+| `live/uat/` | `uat/terraform.tfstate` | ALB API Proxy UAT |
+| `live/production/` | `production/terraform.tfstate` | ALB API Proxy Production |
 
-**Hiện 2 state; sau này 3 state hạ tầng/application + 1 state bootstrap = 4 state.**
+**Có 4 root/state: bootstrap, networking, uat, production.** Hai application state chỉ được tạo khi chạy các root tương ứng.
 Dùng chung một bucket, tách key và IAM permission. Không dùng Terraform workspace
-để chuyển môi trường. `staging` sẽ tương ứng UAT trong tài liệu thiết kế.
+để chuyển môi trường. Tên application environment là `uat` và `production`.
 
 ```text
 modules/
   state-backend/    # S3 versioning, SSE-S3 encryption, block public access, HTTPS-only
   github-oidc/      # Exact repository + environment trust, dedicated role/policies
-  network/          # Shared VPC, private subnets, route table per subnet
+  network/          # Shared VPC, private subnets, optional public subnets + IGW
   vpn/              # VGW + BGP, configurable customer endpoints, two tunnels/connection
+  api-proxy/        # Public HTTPS ALB -> HTTP 9010 targets over VPN, logs/alarms
 bootstrap/
 live/networking/
-.github/workflows/  # Validation without AWS; manual networking plan/apply with OIDC
+live/uat/
+live/production/
+.github/workflows/  # Validation/tests; manual networking/application operations with OIDC
 ```
 
 VGW + BGP là phương án ban đầu cho một VPC dùng chung, cần xác nhận với đội network.
 Hai subnet private là phân bổ đề xuất để kiểm tra VPN và mở rộng sau này.
-Networking phase chưa tạo NAT/Internet Gateway/VPC endpoints; subnet chưa có internet
-egress. Chưa có workload để kiểm thử application traffic. Default VPC security group
-và NACL do AWS tạo; SG cụ thể cho workload sẽ làm cùng application.
+Networking không tạo NAT/VPC endpoints. Khi `public_subnets` rỗng thì chưa có IGW;
+khi điền public subnets cho ALB, networking tạo IGW và internet routes cho các subnet
+đó. Private subnets không được thêm internet route. ALB có SG riêng trong module
+application; default VPC SG và NACL do AWS tạo.
 
 ## 1. Điền thông số và bootstrap một lần
 
@@ -105,8 +115,8 @@ Nếu AWS account đã có GitHub OIDC provider, điền
 `existing_github_oidc_provider_arn`; không tạo provider thứ hai cho cùng issuer.
 Sau `terraform init` thành công, commit `.terraform.lock.hcl` của **mỗi root**;
 không commit `.terraform/`. Chạy `terraform providers lock -platform=linux_amd64`
-nếu bootstrap từ máy khác platform. Lock file chưa được tạo trong lần authoring này
-vì máy chưa có Terraform và không truy cập được registry/release qua shell.
+nếu bootstrap từ máy khác platform. Các root hiện có lock file; review thay đổi
+lock khi chủ động nâng provider, không dùng `init -upgrade` như bước deploy thường lệ.
 
 ## 2. Sau bootstrap: chọn cách provision networking
 
@@ -298,11 +308,11 @@ hoặc VGW ASN có thể thay tài nguyên và gián đoạn VPN. Khi refactor m
 address, dùng `moved` block để giữ mapping state, không xóa state để chạy lại.
 Backend bucket name không đổi chỉ vì đổi VPC; nếu đổi backend key phải migrate state.
 
-Sau này thêm `live/staging` và `live/prod`, mỗi root dùng S3 key riêng; đọc SSM contract
+Đã thêm `live/uat` và `live/production`, mỗi root dùng S3 key riêng; đọc SSM contract
 bằng data source và chọn subnet được phân bổ cho env đó. Networking tiếp tục sở hữu
-VPC/subnet/routes/VPN; application sở hữu ALB/ECS/Lambda/SG. Không khai báo một resource
-ở hai state. Tạo IAM roles/policies và mở rộng workflows theo phạm vi application
-khi bắt đầu phase đó. Có thể thêm subnet dành riêng mỗi env vào networking trước.
+VPC/subnet/routes/VPN; application hiện sở hữu ALB/certificate/SG/monitoring/log bucket.
+Không khai báo một resource ở hai state. Roles và workflow API Proxy đã có; bootstrap
+cần được plan/apply khi cập nhật quyền IAM.
 
 ## 6. Acceptance sau apply
 
@@ -381,3 +391,249 @@ còn nguyên sẽ đề xuất tạo lại networking.
 Workflow không destroy bootstrap. Bucket có `prevent_destroy`/`force_destroy=false`;
 không gỡ protection để cleanup networking. Chưa chạy destroy trên AWS để kiểm thử
 thay đổi workflow này.
+
+## API Proxy — UAT và Production (ALB → VPN → HTTP 9010)
+
+Đã có module `modules/api-proxy`, hai root **`live/uat`** và
+**`live/production`**. Mỗi môi trường có ALB, target group, SG, log bucket,
+CloudWatch dashboard/alarms và SNS riêng. Không tạo API Gateway/Lambda proxy.
+
+```text
+Client HTTPS:443 → ALB của environment → shared VGW/VPN → backend private IP HTTP:9010
+```
+
+| State | Key S3 | Role workflow |
+|---|---|---|
+| Networking dùng chung | `networking/terraform.tfstate` | `cc-terraform-networking` |
+| UAT | `uat/terraform.tfstate` | `cc-terraform-uat` |
+| Production | `production/terraform.tfstate` | `cc-terraform-production` |
+
+Các thao tác dưới chạy từ root repo `cc-infra-testing`. Chọn **GitHub Actions**
+hoặc **LOCAL** cho application, không apply cả hai nối tiếp. Bootstrap vẫn chạy
+local khi sửa IAM. Tên môi trường là `uat` và `production`, không phải staging/prod.
+
+### A. Chuẩn bị nền tảng — LOCAL bootstrap, sau đó networking
+
+1. **LOCAL:** dùng AWS SSO/credential có quyền IAM, plan/apply bootstrap hiện có:
+
+   ```bash
+   aws sts get-caller-identity
+   terraform -chdir=bootstrap init -backend-config=backend.hcl
+   terraform -chdir=bootstrap plan -out=bootstrap.tfplan
+   # Review: thêm hai role/policies và quyền IGW/routes; không tạo lại bucket/VPN.
+   terraform -chdir=bootstrap apply bootstrap.tfplan
+   terraform -chdir=bootstrap output github_role_arns
+   ```
+
+2. Thêm `public_subnets` từ `live/networking/terraform.tfvars.example` vào
+   networking tfvars thật. Bốn CIDR ví dụ chỉ là đề xuất, kiểm tra overlap trước.
+   Mỗi environment cần ít nhất hai subnet, mỗi subnet ở một AZ khác nhau, CIDR /27
+   hoặc lớn hơn và còn ít nhất 8 IP trống. Default map rỗng giữ
+   nguyên private-only deployment cho tới khi bạn chủ động điền public subnets.
+3. **Nếu networking chạy Actions:** đồng bộ secret `NETWORKING_TFVARS`, chạy
+   Networking Terraform `plan` → review → `apply`. **Nếu chạy LOCAL:** init/plan/
+   apply `live/networking` trên cùng S3 key hiện có.
+4. Kiểm tra IGW/default internet routes và VGW route propagation trên **public
+   route tables đặt ALB**; SSM `/cc/networking/contract` version 2 có
+   `public_subnet_ids_by_environment.uat` và `.production`. Các field private
+   subnet/route trước đây vẫn được giữ. Không đọc raw VPN state từ application.
+
+### B. Inputs application và điều kiện backend
+
+Copy example thành tfvars thật nếu cần soạn local; không commit file thật:
+
+```bash
+cp -n live/uat/terraform.tfvars.example live/uat/terraform.tfvars
+cp -n live/production/terraform.tfvars.example live/production/terraform.tfvars
+```
+
+Điền account/region, **domain thật chữ thường**, backend IPs và người nhận alarms.
+Không có backend IP nào được tự điền vào example; map rỗng là chủ ý.
+`enable_alb=true` yêu cầu ít nhất một target và một email/alarm action ARN.
+Cấu hình target có thể có bốn server đã xác nhận, hoặc một server để kiểm thử có
+kiểm soát. Khách hàng/đội backend phải bảo đảm shared datastore và failover đúng
+trước khi đăng ký nhiều bản `cc-mock-api` độc lập: YAML/cache trong source hiện
+không tự đồng bộ giữa các node. Không coi cookie stickiness là shared datastore.
+
+Backend **HTTP 9010** là cố định trong module theo quyết định đã chốt. Với source
+`cc-mock-api`, container vẫn chạy HTTP 8000, nên server phải publish host
+`9010:8000` (hoặc reverse proxy tương ứng). Kiểm tra runtime từng server. Commerce
+allowlist source **ALB public-subnet CIDRs thực tế** tới backend 9010 và route
+chiều về qua VPN; không dùng mobile IP hoặc public IP ALB làm source allowlist.
+
+ALB bảo toàn Host và path `/api/...`; backend tự kiểm tra Firebase bearer token.
+Rule priority cao chặn `/api/test` và `/api/test/*` bằng 403. Docs/redoc/openapi bị
+chặn mặc định; root không expose tùy chọn bỏ chặn qua tfvars. ALB chỉ forward cho
+đúng Host domain đã điền, Host khác trả 404. Đội backend vẫn phải tắt tooling test
+trong production; edge rules không thay cho bảo vệ application.
+
+Health check mặc định `HTTP :9010 /health`, matcher `200`; không tự đổi thành
+`/api/health`. Source hiện chỉ cung cấp liveness, không xác nhận readiness Firebase/
+state store. Backend phải chấp nhận Host health check dạng IP:9010. Nếu thêm
+readiness endpoint ở backend, cấu hình `health_check_path` tương ứng.
+
+### C. Provision qua GITHUB ACTIONS
+
+Tạo GitHub Environments **`uat`** và **`production`**, chỉ cho branch `main`,
+reviewers theo quy trình team. Mỗi Environment có:
+
+| Loại | Tên | Giá trị |
+|---|---|---|
+| Variable | `AWS_ACCOUNT_ID` | Account đã bootstrap |
+| Variable | `AWS_REGION` | Region application/networking |
+| Variable | `STATE_BUCKET` | Cùng bucket state hiện có |
+| Variable | `AWS_ROLE_ARN` | Role UAT hoặc Production đúng từ bootstrap output |
+| Secret | `API_PROXY_TFVARS` | Toàn bộ nội dung HCL tfvars của environment tương ứng |
+
+**Bước 1 — Certificate:** để `enable_alb=false`, chạy **API Proxy Terraform**,
+chọn environment, `operation=plan`, review rồi chạy `apply`. Job request ACM và
+in output `dns_validation_records`; chưa tạo ALB và không chờ DNS bên ngoài.
+Gửi record CNAME xác thực cho khách hàng thêm vào DNS. Giữ record để ACM renew.
+Nếu đã có ACM certificate Issued đúng account/region và cover domain, điền
+`existing_certificate_arn` thay cho request certificate mới.
+
+**Bước 2 — ALB:** chờ certificate Issued và networking sẵn sàng, điền backend IPs,
+recipients, đổi secret `API_PROXY_TFVARS` sang `enable_alb=true`, plan/review/apply
+lại. Với certificate mới, validation resource có timeout 10 phút để fail rõ nếu
+DNS chưa đúng. Module dùng certificate đã validate trước khi tạo listener.
+**Không đổi `enable_alb` về false sau khi ALB đã chạy trừ khi muốn Terraform đề
+xuất xóa module ALB/monitoring/logging.** Đây không phải nút pause.
+
+**Bước 3 — Traffic DNS:** output `api_proxy.alb_dns_name` là target để khách hàng
+trỏ CNAME domain API; nếu họ quản lý Route 53 có thể dùng Alias. Record traffic
+khác record ACM validation. Không hardcode ALB IP. Chưa tự quản lý DNS khách hàng.
+
+Quyền role application: state/ELB/log bucket/alarms/SNS tách theo environment;
+SG/rule mutations yêu cầu tag `Environment` và `Stack` đúng environment. Tạo SG
+chỉ được trong VPC mang tag `Project=commerce-casino`, `Stack=networking`. Role
+không được retag SG đang có sang environment khác hoặc xóa hai tag phân quyền.
+EC2/ELB describe vẫn đọc metadata trong region; các role không sửa IAM hay shared
+networking. Bootstrap là nơi cập nhật những policies này.
+
+Job chỉ chọn `uat`/`production`, dùng role và state key tương ứng. Preview và apply
+là hai run, apply tạo plan mới; giữ cùng commit và input sau review. Secret không
+version hóa theo commit. Environment approval nằm trước job, không sau plan mới.
+Không có auto-apply hoặc auto-destroy khi push/PR.
+
+### D. Provision bằng LOCAL — thay thế mục C
+
+Dùng AWS session đủ quyền application và S3 state. Điền backend.hcl cùng bucket,
+đúng key environment. Ví dụ UAT:
+
+```bash
+cp -n live/uat/backend.hcl.example live/uat/backend.hcl
+# Điền bucket/region; key giữ uat/terraform.tfstate. Điền tfvars, enable_alb=false.
+aws sts get-caller-identity
+terraform -chdir=live/uat init -backend-config=backend.hcl
+terraform -chdir=live/uat validate
+terraform -chdir=live/uat plan -out=api-proxy.tfplan
+terraform -chdir=live/uat apply api-proxy.tfplan
+terraform -chdir=live/uat output dns_validation_records
+```
+
+Khách hàng thêm DNS validation CNAME, chờ Issued; sau đó sửa tfvars
+`enable_alb=true`, plan/review/apply mới và đọc output:
+
+```bash
+terraform -chdir=live/uat output api_proxy
+```
+Production làm tương tự với root `live/production` và key
+`production/terraform.tfstate`; không dùng UAT state cho Production.
+Không cần chạy workflow để apply lại. Nếu chuyển từ local sang Actions, đồng bộ
+input/secret để tránh workflow áp lại giá trị cũ.
+
+### E. Monitoring, logs và kiểm tra sau apply
+
+- Mỗi env có CloudWatch dashboard: requests, healthy/unhealthy targets, ALB/backend
+  5xx, backend latency p95 và target connection errors. Các dimensions được tách
+  theo ALB/target group. VPN alarms/logs vẫn thuộc networking state.
+- Alarms healthy targets dưới `minimum_healthy_targets`, ALB/backend 5xx, target
+  connection errors và p95 latency. Ngưỡng qua tfvars, không mặc định 4 target luôn
+  active. Error/latency metrics không có traffic được coi notBreaching; target
+  health thiếu dữ liệu được coi breaching. Có thêm ACM DaysToExpiry dưới 30 ngày.
+- SNS topic riêng mỗi env; **email phải nhấn Confirm subscription** mới nhận
+  thông báo. Input yêu cầu recipient/action nhưng Terraform không xác nhận hộ email.
+  Topic policy cho phép `cloudwatch.amazonaws.com` publish, giới hạn đúng account và
+  prefix alarm của environment. Với SNS ARN bên ngoài, chủ topic phải cấp quyền
+  CloudWatch tương ứng; module không sửa policy hoặc KMS key của topic bên ngoài.
+- Native ALB access logs ghi **S3, không phải CloudWatch Logs**. Bucket SSE-S3,
+  block public access, policy HTTPS-only, lifecycle 30 ngày UAT/90 ngày Production
+  (đổi qua tfvars). Bucket logs khác bucket state; tên cố định theo convention
+  `cc-ACCOUNT-REGION-ENV-api-proxy-logs` khớp IAM bootstrap.
+- Không có Lambda proxy, Synthetics canary, full X-Ray hoặc log agent trên server
+  khách hàng trong phạm vi này. ALB metrics không chứng minh nghiệp vụ luôn hoạt
+  động; application logs/readiness và backend data consistency là phần backend.
+
+Nghiệm thu: domain/cert đúng, gọi HTTPS domain thật thành công, cả hai AZ có route
+qua VPN, registered targets healthy, `/api/test/*` trả 403, docs bị chặn, Host
+ngoài domain trả 404, auth thiếu token bị backend từ chối ở API cần auth, email SNS
+đã confirm và có log S3 sau test traffic. Khi ALB chưa được trỏ DNS có thể test
+bằng client hỗ trợ connect-to/SNI đúng domain; không tắt certificate verification.
+Test write→read qua các node và failover phối hợp Commerce trước go-live.
+
+ALB có thể fail-open khi mọi target đều unhealthy; health checks không phải cơ chế
+chặn tuyệt đối trong tình huống đó. Xem alarm, target health/reason codes và VPN
+telemetry khi lỗi; không chỉ dựa vào status Terraform apply.
+
+### F. Update và destroy đúng environment
+
+Đổi input/code → plan/review/apply theo mục C hoặc D. Khi thêm quyền IAM, update
+bootstrap LOCAL trước. Không dùng app root để sửa VPC/VPN.
+
+Actions: `plan-destroy` để preview; `destroy` yêu cầu `destroy-uat` hoặc
+`destroy-production` trong `destroy_confirmation`. Input sai bị chặn trước AWS auth.
+Local: `terraform -chdir=live/uat plan -destroy -out=destroy.tfplan`, review rồi
+`terraform -chdir=live/uat apply destroy.tfplan`; thay root đúng nếu Production.
+
+Trước khi execute saved plan, workflow kiểm tra ALB deletion protection bằng
+`scripts/check-terraform-plan.py`. Nếu plan định xóa/thay ALB đang được bảo vệ, job
+dừng trước apply để tránh xóa một phần tài nguyên rồi mới vướng protection.
+
+**Production mặc định bật ALB deletion protection.** Trước destroy cần chủ động
+đặt `enable_deletion_protection=false`, giữ `enable_alb=true`, plan/review/apply
+thay đổi đó trước.
+**Log bucket mặc định không force-destroy**: có logs sẽ chặn xóa bucket. Giữ logs
+hoặc xuất/archive theo quy trình; nếu quyết định xóa toàn bộ logs thì đặt
+`force_destroy_logs=true`, plan/review/apply trước destroy. Không tự bypass các
+protection trong workflow. Destroy app không xóa shared VPN/VPC/state bucket.
+Certificate do root tạo cũng thuộc destroy plan; record DNS khách hàng cần cập
+nhật/gỡ theo change riêng sau khi phối hợp TTL và downtime.
+
+### G. Kiểm tra cấu hình trước triển khai
+
+Workflow kiểm tra account ID, region, bucket name và role ARN khớp environment trước
+khi assume role. Provider được khóa bằng `.terraform.lock.hcl`; CI/deploy dùng
+`init -lockfile=readonly` để không tự chọn provider mới. Khi chủ động nâng provider,
+chạy `terraform init -upgrade` local, review/commit lock file rồi chạy lại CI.
+
+Ở bước certificate-only, output `api_proxy` là `{}` để lệnh đọc output cuối job
+vẫn thành công; sau khi bật ALB, output này chứa thông tin application.
+
+Workflow CI được cấu hình validate bốn roots và chạy Terraform mock-provider tests cho module ALB/network
+và certificate-only stage. Python tests thực thi shell workflow với Terraform giả
+để kiểm tra cả hai env, bốn operations và destroy confirmation chéo environment.
+Offline IAM tests evaluate chính các biểu thức policy HCL bằng Terraform, kiểm tra
+state/role/resource isolation, tag-on-create và quyền CloudWatch publish SNS. Có
+thêm tests thực thi validation input và kiểm tra output được lưu đúng trong state
+local giả lập (không có AWS provider/tài nguyên AWS). Đây
+không thay cho IAM Simulator hay kiểm thử quyền runtime trên AWS. Không dùng AWS
+thật cho các tests này.
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+# Sau init -backend=false tương ứng, Terraform mock tests:
+terraform -chdir=modules/api-proxy test
+terraform -chdir=modules/network test
+terraform -chdir=live/uat test
+terraform -chdir=live/production test
+```
+
+
+Kiểm chứng local: offline IAM/workflow tests có thể chạy không cần AWS. Nếu
+`terraform validate`/mock tests báo provider không khởi động được vì sandbox chặn
+Unix socket (`setsockopt: operation not permitted`), chưa thể coi chúng đã pass;
+chạy các checks đó trên CI hoặc máy local thông thường trước apply.
+
+Tham chiếu khi rà quyền: [EC2 security-group tag permissions](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_examples_ec2_securitygroups-vpc.html),
+[ELBv2 IAM actions/resources](https://docs.aws.amazon.com/service-authorization/latest/reference/list_elbv2.html),
+[CloudWatch → SNS policy](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Notify_Users_Alarm_Changes.html).

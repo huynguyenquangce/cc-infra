@@ -1,7 +1,9 @@
+# Bootstrap the shared Terraform state bucket for the project.
 module "state_backend" {
   source      = "../modules/state-backend"
   bucket_name = var.state_bucket_name
 }
+# Bootstrap the GitHub OIDC provider and workflow roles/policies.
 module "github_oidc" {
   source                = "../modules/github-oidc"
   repository            = var.github_repository

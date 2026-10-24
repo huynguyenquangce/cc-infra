@@ -9,3 +9,7 @@
 **/backend.tf.local
 !**/*.example
 # Commit .terraform.lock.hcl after a successful init for every root.
+
+# Local Python verification artifacts
+__pycache__/
+*.pyc
