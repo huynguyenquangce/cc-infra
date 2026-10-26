@@ -1,4 +1,4 @@
-bucket       = "REPLACE-cc-terraform-state"
+bucket       = "huy-cc-terraform-state"
 key          = "bootstrap/terraform.tfstate"
 region       = "us-east-1"
 encrypt      = true

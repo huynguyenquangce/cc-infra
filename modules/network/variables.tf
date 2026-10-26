@@ -3,6 +3,16 @@ variable "private_subnets" {
   type = map(object({ cidr = string, availability_zone = string }))
 }
 
+variable "nat_subnet" {
+  description = "Optional shared public subnet hosting one NAT gateway for private-subnet internet egress."
+  type        = object({ cidr = string, availability_zone = string })
+  default     = null
+  validation {
+    condition     = var.nat_subnet == null || try(can(cidrnetmask(var.nat_subnet.cidr)) && tonumber(split("/", var.nat_subnet.cidr)[1]) <= 28, false)
+    error_message = "NAT subnet requires an IPv4 CIDR of /28 or larger."
+  }
+}
+
 variable "public_subnets" {
   description = "Optional ALB subnets. Existing deployments remain unchanged until entries are supplied."
   type        = map(object({ cidr = string, availability_zone = string, environment = string }))

@@ -1,11 +1,8 @@
 aws_account_id = "123456789012" # REPLACE
 aws_region = "us-east-1"
-domain_name = "api-uat.REPLACE.example.com"
-# Stage 1: apply with false, send dns_validation_records to Commerce DNS team.
-# Stage 2: once certificate is Issued and public networking is ready, set true.
+# API Proxy: CloudFront (*.cloudfront.net HTTPS) -> internal ALB in private-a/b -> backends over VPN.
+# No domain or ACM. Commerce allowlists 10.0.10.0/24 and 10.0.11.0/24 as source to TCP 9010.
 enable_alb = false
-# Alternatively supply an already-issued ACM certificate covering domain_name:
-# existing_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/REPLACE"
 # Fill verified backend IPs, not the public IPs of VPN gateways. No IP is invented.
 # All targets use HTTP 9010. Container port can stay 8000 behind host mapping 9010:8000.
 backend_targets = {
@@ -17,7 +14,6 @@ backend_targets = {
 # Supply recipients or existing SNS ARNs before enable_alb=true.
 alert_emails = []
 additional_alarm_action_arns = []
-allowed_client_cidrs = ["0.0.0.0/0"] # Restrict UAT to team/public egress CIDRs if needed.
 enable_deletion_protection = false
 # Non-empty log buckets are retained unless you explicitly opt into deleting logs.
 force_destroy_logs = false
@@ -27,3 +23,24 @@ health_check_path = "/health" # Not /api/health. Currently liveness, not full re
 minimum_healthy_targets = 1 # Set according to actual active/standby backend policy.
 error_count_threshold = 5
 latency_p95_seconds = 2
+
+# --- MCP Server ------------------------------------------------------------
+# Order: networking contract v3 (NAT, endpoints, ECR) -> push the first image -> enable_mcp=true,
+# mcp_run_service=false -> fill cc-mcp/uat/squirrel (and genesis) with put-secret-value -> mcp_run_service=true.
+enable_mcp      = false
+mcp_run_service = false
+# mcp_initial_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/cc-mcp-server@sha256:REPLACE"
+mcp_enabled_features = ["squirrel"] # add "genesis" once Commerce confirms the GGAPI endpoint over VPN
+mcp_app_environment = {
+  LOG_LEVEL              = "INFO"
+  MCP_AUTH_JWKS_URL      = "https://REPLACE-commerce-gateway/.well-known/jwks.json"
+  MCP_AUTH_ISSUER        = "https://REPLACE-commerce-gateway/"
+  MCP_AUTH_AUDIENCE_BASE = "https://REPLACE-mcp-audience"
+  SQUIRREL_BASE_URL      = "https://REPLACE.squirrel.example"
+  # GENESIS_BASE_URL     = "https://REPLACE/GGAPI/GGAPI.svc/json"
+  # GENESIS_TIMEZONE     = "America/Los_Angeles"
+}
+mcp_vendor_egress_cidrs = ["0.0.0.0/0"] # narrow to Squirrel CIDRs when published
+# mcp_vpn_egress_targets = { genesis = { cidr = "172.19.16.REPLACE/32", port = 443 } }
+mcp_min_tasks = 1
+mcp_max_tasks = 2

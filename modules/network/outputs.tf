@@ -8,3 +8,6 @@ output "public_subnet_ids_by_environment" {
   } }
 }
 output "public_route_table_ids" { value = { for k, r in aws_route_table.public : k => r.id } }
+
+output "nat_gateway_id" { value = one(aws_nat_gateway.this[*].id) }
+output "nat_public_ip" { value = one(aws_eip.nat[*].public_ip) }

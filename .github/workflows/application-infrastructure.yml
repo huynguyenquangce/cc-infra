@@ -1,5 +1,5 @@
-name: API Proxy Terraform
-run-name: API Proxy ${{ inputs.environment }} ${{ inputs.operation }} by @${{ github.actor }}
+name: Application Infrastructure Terraform
+run-name: Application infrastructure ${{ inputs.environment }} ${{ inputs.operation }} by @${{ github.actor }}
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +10,7 @@ on:
         required: true
         default: uat
       operation:
-        description: Plan, apply, preview destruction, or destroy this API Proxy environment
+        description: Plan, apply, preview destruction, or destroy this environment (API Proxy and MCP Server)
         type: choice
         options: [plan, apply, plan-destroy, destroy]
         default: plan
@@ -75,14 +75,14 @@ jobs:
       - name: Check required configuration
         env:
           ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-          TFVARS_HCL: ${{ secrets.API_PROXY_TFVARS }}
+          TFVARS_HCL: ${{ secrets.APPLICATION_TFVARS }}
         run: |
           set -euo pipefail
           : "${AWS_REGION:?Set AWS_REGION}"
           : "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID}"
           : "${STATE_BUCKET:?Set STATE_BUCKET}"
           : "${ROLE_ARN:?Set AWS_ROLE_ARN}"
-          : "${TFVARS_HCL:?Set API_PROXY_TFVARS}"
+          : "${TFVARS_HCL:?Set APPLICATION_TFVARS}"
           [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || { echo "AWS_ACCOUNT_ID must contain 12 digits" >&2; exit 1; }
           [[ "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]] || { echo "Invalid AWS_REGION" >&2; exit 1; }
           [[ "$STATE_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { echo "STATE_BUCKET must be a bucket name, without s3:// or a path" >&2; exit 1; }
@@ -108,7 +108,7 @@ jobs:
             -backend-config="encrypt=true" \
             -backend-config="use_lockfile=true"
       - run: terraform validate -no-color
-      - name: Create API Proxy plan for the selected operation
+      - name: Create application plan for the selected operation
         env:
           OPERATION: ${{ inputs.operation }}
         run: |
@@ -121,20 +121,20 @@ jobs:
           esac
           terraform plan "${plan_options[@]}" -input=false -lock-timeout=5m -no-color \
             -var="aws_account_id=$AWS_ACCOUNT_ID" \
-            -var="aws_region=$AWS_REGION" -out=api-proxy.tfplan
+            -var="aws_region=$AWS_REGION" -out=application.tfplan
       - name: Check ALB deletion protection before executing changes
         if: inputs.operation == 'apply' || inputs.operation == 'destroy'
-        run: python3 ../../scripts/check-terraform-plan.py api-proxy.tfplan
+        run: python3 ../../scripts/check-terraform-plan.py application.tfplan
       - name: Execute the saved plan from this run
         if: inputs.operation == 'apply' || inputs.operation == 'destroy'
-        run: terraform apply -input=false -lock-timeout=5m -no-color api-proxy.tfplan
-      - name: Show certificate validation and application outputs
+        run: terraform apply -input=false -lock-timeout=5m -no-color application.tfplan
+      - name: Show application outputs
         if: inputs.operation == 'apply'
         run: |
-          terraform output -json dns_validation_records
           terraform output -json api_proxy
+          terraform output -json mcp_server
       - name: Remove local plan and variables
         if: always()
         working-directory: ${{ github.workspace }}
         run: |
-          rm -f "live/$DEPLOY_ENV/api-proxy.tfplan" "live/$DEPLOY_ENV/terraform.tfvars"
+          rm -f "live/$DEPLOY_ENV/application.tfplan" "live/$DEPLOY_ENV/terraform.tfvars"

@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        root: [modules/api-proxy, modules/network, live/uat, live/production]
+        root: [modules/api-proxy, modules/mcp-server, modules/cloudfront-vpc-origin, modules/network, live/uat, live/production]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

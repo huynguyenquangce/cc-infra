@@ -1,0 +1,96 @@
+# Example for the cc-mcp-server repository (copy to that repo; not run from cc-infra).
+# Build once -> Trivy -> push to ECR by digest -> deploy UAT -> (approval) -> deploy Production with the same digest.
+# Repository variables: AWS_ACCOUNT_ID, AWS_IMAGE_PUSH_ROLE_ARN (cc-mcp-image-push).
+# GitHub Environments uat / production: AWS_ROLE_ARN (cc-mcp-deploy-<env>), MCP_ENDPOINT (terraform output mcp_endpoint);
+# give production required reviewers.
+name: Build and deploy MCP server
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mcp-release
+  cancel-in-progress: false
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: cc-mcp-server
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build -t "local/cc-mcp-server:${GITHUB_SHA}" .
+      - name: Scan image (CRITICAL/HIGH blocks the release)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.1 image \
+            --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --no-progress "local/cc-mcp-server:${GITHUB_SHA}"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_IMAGE_PUSH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+      - name: Push to ECR and resolve the digest
+        id: push
+        env:
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          repository="${registry}/${ECR_REPOSITORY}"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          # Tags are immutable: a re-run of the same commit reuses the image already pushed.
+          if ! aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            docker tag "local/cc-mcp-server:${GITHUB_SHA}" "${repository}:${GITHUB_SHA}"
+            docker push "${repository}:${GITHUB_SHA}"
+          fi
+          digest="$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)"
+          echo "image=${repository}@${digest}" >> "$GITHUB_OUTPUT"
+
+  deploy-uat:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: uat
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Roll out the image and wait for a stable service
+        run: scripts/deploy-ecs.sh uat "${{ needs.build.outputs.image }}" "${{ vars.MCP_ENDPOINT }}"
+
+  deploy-production:
+    needs: [build, deploy-uat]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Promote the same digest to Production
+        run: scripts/deploy-ecs.sh production "${{ needs.build.outputs.image }}" "${{ vars.MCP_ENDPOINT }}"

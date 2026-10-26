@@ -8,15 +8,14 @@ variable "environment" {
 variable "aws_account_id" { type = string }
 variable "aws_region" { type = string }
 variable "vpc_id" { type = string }
-variable "public_subnet_ids" {
-  type = list(string)
+variable "alb_subnet_ids" {
+  description = "Private subnets for the internal ALB; their CIDRs are the source Commerce allowlists for port 9010."
+  type        = list(string)
   validation {
-    condition     = length(distinct(var.public_subnet_ids)) >= 2
-    error_message = "ALB requires at least two distinct public subnets (in separate AZs)."
+    condition     = length(distinct(var.alb_subnet_ids)) >= 2
+    error_message = "Internal ALB requires at least two distinct private subnets (in separate AZs)."
   }
 }
-variable "domain_name" { type = string }
-variable "certificate_arn" { type = string }
 variable "backend_targets" {
   description = "Stable names mapped to private backend host IPs. Port on the host must expose HTTP 9010."
   type        = map(string)
@@ -31,17 +30,14 @@ variable "backend_targets" {
     error_message = "Backend target IPs must be distinct."
   }
 }
-variable "allowed_client_cidrs" {
-  type    = set(string)
-  default = ["0.0.0.0/0"]
-  validation {
-    condition     = length(var.allowed_client_cidrs) > 0 && alltrue([for c in var.allowed_client_cidrs : can(cidrnetmask(c))])
-    error_message = "Supply IPv4 CIDRs allowed to call the public listener."
-  }
+variable "origin_read_timeout_seconds" {
+  description = "CloudFront wait for the backend response; 60 is the maximum without a quota increase."
+  type        = number
+  default     = 30
 }
-variable "enable_http_redirect" {
-  type    = bool
-  default = true
+variable "cloudfront_price_class" {
+  type    = string
+  default = "PriceClass_100"
 }
 variable "enable_deletion_protection" {
   type    = bool

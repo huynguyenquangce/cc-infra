@@ -1,12 +1,14 @@
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_data "aws_ec2_managed_prefix_list" {
+    defaults = { id = "pl-3b927c52" }
+  }
+}
 variables {
-  environment       = "uat"
-  aws_account_id    = "123456789012"
-  aws_region        = "us-east-1"
-  vpc_id            = "vpc-0123456789abcdef0"
-  public_subnet_ids = ["subnet-0123456789abcdef0", "subnet-1123456789abcdef0"]
-  domain_name       = "api-uat.example.com"
-  certificate_arn   = "arn:aws:acm:us-east-1:123456789012:certificate/01234567-89ab-cdef-0123-456789abcdef"
+  environment    = "uat"
+  aws_account_id = "123456789012"
+  aws_region     = "us-east-1"
+  vpc_id         = "vpc-0123456789abcdef0"
+  alb_subnet_ids = ["subnet-0123456789abcdef0", "subnet-1123456789abcdef0"]
   backend_targets = {
     first  = "172.19.16.23"
     second = "172.19.16.24"
@@ -17,8 +19,12 @@ variables {
 run "routing_and_public_surface" {
   command = plan
   assert {
-    condition     = !aws_lb.this.internal && aws_lb_target_group.backend.target_type == "ip" && aws_lb_target_group.backend.protocol == "HTTP" && aws_lb_target_group.backend.port == 9010
-    error_message = "The public ALB must route to on-prem IP targets over HTTP 9010."
+    condition     = aws_lb.this.internal && aws_lb_target_group.backend.target_type == "ip" && aws_lb_target_group.backend.protocol == "HTTP" && aws_lb_target_group.backend.port == 9010
+    error_message = "The internal ALB must route to on-prem IP targets over HTTP 9010."
+  }
+  assert {
+    condition     = aws_lb_listener.http.port == 80 && aws_lb_listener.http.default_action[0].type == "forward" && aws_vpc_security_group_ingress_rule.cloudfront.prefix_list_id == "pl-3b927c52" && aws_vpc_security_group_ingress_rule.cloudfront.cidr_ipv4 == null
+    error_message = "Only CloudFront (VPC origin) may reach the HTTP listener."
   }
   assert {
     condition     = length(aws_lb_target_group_attachment.backend) == 4 && alltrue([for t in aws_lb_target_group_attachment.backend : t.port == 9010 && t.availability_zone == "all"])
@@ -29,8 +35,8 @@ run "routing_and_public_surface" {
     error_message = "Health check must match the backend contract, not /api/health."
   }
   assert {
-    condition     = aws_lb_listener_rule.block_testing.priority < aws_lb_listener_rule.forward.priority && aws_lb_listener_rule.block_testing.action[0].fixed_response[0].status_code == "403" && length(aws_lb_listener_rule.block_documentation) == 1
-    error_message = "Testing/docs blocks must precede forwarding to protect the mock API."
+    condition     = aws_lb_listener_rule.block_testing.priority < aws_lb_listener_rule.block_documentation[0].priority && aws_lb_listener_rule.block_testing.action[0].fixed_response[0].status_code == "403" && length(aws_lb_listener_rule.block_documentation) == 1
+    error_message = "Testing/docs blocks must sit on the listener ahead of the default forward to protect the mock API."
   }
   assert {
     condition     = alltrue([for r in aws_vpc_security_group_egress_rule.backend : r.from_port == 9010 && r.to_port == 9010 && endswith(r.cidr_ipv4, "/32")])

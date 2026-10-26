@@ -3,10 +3,17 @@ aws_region      = "us-east-1"    # Design region; screenshots in codex-knowledge
 vpc_cidr        = "10.0.0.0/16" # Design proposal: confirm no overlap with Commerce/on-prem first.
 amazon_side_asn = 64512        # Proposed AWS ASN, NOT Commerce ASN 64583.
 # Proposed allocation: validate CIDRs and AZs before deployment.
+# Shared by both environments: internal ALB nodes and MCP tasks run in both subnets.
 private_subnets = {
   private-a = { cidr = "10.0.10.0/24", availability_zone = "us-east-1a" }
   private-b = { cidr = "10.0.11.0/24", availability_zone = "us-east-1b" }
 }
+# MCP egress: one NAT gateway (single AZ, accepted risk) adds 0.0.0.0/0 -> NAT to private route tables.
+nat_subnet = { cidr = "10.0.1.0/28", availability_zone = "us-east-1a" }
+# Interface endpoints (ecr.api, ecr.dkr, logs, secretsmanager) in one AZ + S3 gateway endpoint.
+vpc_endpoint_subnet_keys = ["private-a"]
+# Shared registry for the MCP image (build once, promote UAT -> Production).
+ecr_repositories = ["cc-mcp-server"]
 # Intentionally empty: fill only endpoints confirmed by Commerce.
 # Document lists 66.215.9.236 and 207.214.63.236, ASN 64583.
 # One entry = 1 VPN connection / 2 tunnels; two entries = 2 connections / 4 tunnels.
@@ -18,8 +25,9 @@ phase1_lifetime_seconds = 28800 # Proposed AWS defaults: confirm against device 
 phase2_lifetime_seconds = 3600
 alarm_action_arns       = [] # Supply existing same-region SNS topic ARN(s) for notifications.
 
-# Proposed ALB allocation: confirm no overlap with actual AWS/Commerce networks.
-# Copy into your real networking tfvars AND NETWORKING_TFVARS secret to enable.
+# Public subnets (IGW route) kept for future public workloads. Both internal ALBs (API Proxy, MCP)
+# now sit in private-a/b behind CloudFront VPC origins, so nothing is placed here today.
+# Copy into your real networking tfvars AND NETWORKING_TFVARS secret to keep them.
 public_subnets = {
   uat-alb-a = { cidr = "10.0.100.0/24", availability_zone = "us-east-1a", environment = "uat" }
   uat-alb-b = { cidr = "10.0.101.0/24", availability_zone = "us-east-1b", environment = "uat" }

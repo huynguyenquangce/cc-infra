@@ -12,7 +12,27 @@ variable "aws_account_id" {
 
 variable "vpc_cidr" { type = string }
 variable "private_subnets" {
-  type = map(object({ cidr = string, availability_zone = string }))
+  description = "Private subnets shared by both environments' internal ALBs and MCP tasks."
+  type        = map(object({ cidr = string, availability_zone = string }))
+}
+variable "nat_subnet" {
+  description = "Optional public subnet for one shared NAT gateway; null keeps private subnets without internet egress."
+  type        = object({ cidr = string, availability_zone = string })
+  default     = null
+}
+variable "vpc_endpoint_subnet_keys" {
+  description = "private_subnets keys hosting interface endpoints (ECR, Logs, Secrets Manager); empty creates no endpoints."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for k in var.vpc_endpoint_subnet_keys : contains(keys(var.private_subnets), k)])
+    error_message = "VPC endpoint subnet keys must reference private_subnets entries."
+  }
+}
+variable "ecr_repositories" {
+  description = "Shared ECR repositories, e.g. [\"cc-mcp-server\"]."
+  type        = set(string)
+  default     = []
 }
 variable "amazon_side_asn" { type = number }
 variable "customer_gateways" { type = map(object({ ip_address = string, bgp_asn = number })) }

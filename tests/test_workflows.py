@@ -37,7 +37,7 @@ if sys.argv[1:3] == ['show', '-json']:
         return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=self.work, env=dict(self.env, OPERATION=operation, DEPLOY_ENV=environment, DESTROY_CONFIRMATION=confirmation), text=True, capture_output=True)
 
     def test_application_environment_and_operation_matrix(self):
-        workflow = self.read("api-proxy.yml")
+        workflow = self.read("application-infrastructure.yml")
         trigger = workflow.get("on", workflow.get(True))
         self.assertEqual(trigger["workflow_dispatch"]["inputs"]["environment"]["options"], ["uat", "production"])
         job = next(iter(workflow["jobs"].values()))
@@ -49,7 +49,7 @@ if sys.argv[1:3] == ['show', '-json']:
         auth_index = next(i for i, s in enumerate(steps) if "configure-aws-credentials@" in s.get("uses", ""))
         self.assertGreater(auth_index, 0)
         backend = next(s for s in steps if s.get("name") == "Initialize S3 backend")
-        plan = next(s for s in steps if s.get("name") == "Create API Proxy plan for the selected operation")
+        plan = next(s for s in steps if s.get("name") == "Create application plan for the selected operation")
         execute = next(s for s in steps if s.get("name") == "Execute the saved plan from this run")
         preflight = next(s for s in steps if s.get("name") == "Check ALB deletion protection before executing changes")
         self.assertLess(steps.index(preflight), steps.index(execute))
@@ -75,19 +75,19 @@ if sys.argv[1:3] == ['show', '-json']:
                     self.assertEqual("-destroy" in calls[1], operation in ["plan-destroy", "destroy"])
                     self.assertEqual(len(calls), 4 if should_execute else 2)
                     if should_execute:
-                        self.assertEqual(calls[2], ["show", "-json", "api-proxy.tfplan"])
+                        self.assertEqual(calls[2], ["show", "-json", "application.tfplan"])
                         self.assertEqual(calls[3][0], "apply")
-                        self.assertEqual(calls[3][-1], "api-proxy.tfplan")
+                        self.assertEqual(calls[3][-1], "application.tfplan")
 
     def test_destroy_confirmation_cannot_cross_environments(self):
-        guard = next(iter(self.read("api-proxy.yml")["jobs"].values()))["steps"][0]["run"]
+        guard = next(iter(self.read("application-infrastructure.yml")["jobs"].values()))["steps"][0]["run"]
         for environment, confirmation in [("production", "destroy-uat"), ("uat", "destroy-production"), ("uat", ""), ("production", "yes"), ("production", "destroy-production$(touch SHOULD_NOT_EXIST)")]:
             self.assertNotEqual(self.run_script(guard, "destroy", environment, confirmation).returncode, 0)
         self.assertFalse((self.work / "SHOULD_NOT_EXIST").exists())
         self.assertFalse(self.log.exists())
 
     def test_configuration_rejects_wrong_account_role_and_bucket(self):
-        for file, environment in [("api-proxy.yml", "uat"), ("api-proxy.yml", "production"), ("networking.yml", "networking")]:
+        for file, environment in [("application-infrastructure.yml", "uat"), ("application-infrastructure.yml", "production"), ("networking.yml", "networking")]:
             job = next(iter(self.read(file)["jobs"].values()))
             script = next(s["run"] for s in job["steps"] if s.get("name") == "Check required configuration")
             correct = dict(self.env, DEPLOY_ENV=environment, ROLE_ARN=f"arn:aws:iam::123456789012:role/cc-terraform-{environment}", TFVARS_HCL='aws_account_id = "123456789012"')
@@ -118,7 +118,7 @@ if sys.argv[1:3] == ['show', '-json']:
         self.assertNotEqual(self.run_script(guard, "destroy", "networking", "destroy-uat").returncode, 0)
 
     def test_plan_guard_blocks_protected_alb_and_invalid_plan_json(self):
-        script = "python3 " + shlex.quote(str(ROOT / "scripts/check-terraform-plan.py")) + " api-proxy.tfplan"
+        script = "python3 " + shlex.quote(str(ROOT / "scripts/check-terraform-plan.py")) + " application.tfplan"
         for actions in [["delete"], ["delete", "create"], ["create", "delete"]]:
             plan = {"resource_changes": [{"address": "module.api_proxy[0].aws_lb.this", "type": "aws_lb", "change": {"actions": actions, "before": {"enable_deletion_protection": True}}}]}
             self.env["CC_TEST_PLAN_JSON"] = json.dumps(plan)

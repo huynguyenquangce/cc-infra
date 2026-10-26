@@ -4,3 +4,5 @@ state_bucket_name = "huy-cc-terraform-state"
 github_repository = "huynguyenquangce@129473045/cc-infra@1429656653"
 # One GitHub OIDC provider per AWS account. Supply ARN if it already exists.
 # existing_github_oidc_provider_arn = "arn:aws:iam::108782089926:oidc-provider/token.actions.githubusercontent.com"
+# Application CI roles for cc-mcp-server (image push on main, deploy per GitHub Environment).
+# mcp_app_repository = "REPLACE-OWNER/cc-mcp-server"

@@ -11,4 +11,5 @@ module "github_oidc" {
   state_bucket_arn      = module.state_backend.bucket_arn
   aws_region            = var.aws_region
   aws_account_id        = var.aws_account_id
+  mcp_app_repository    = var.mcp_app_repository
 }

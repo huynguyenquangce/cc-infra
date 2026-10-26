@@ -16,3 +16,8 @@ variable "existing_github_oidc_provider_arn" {
   type    = string
   default = null
 }
+variable "mcp_app_repository" {
+  description = "cc-mcp-server OIDC OWNER/REPO segment for its image-push and deploy roles; null creates none."
+  type        = string
+  default     = null
+}

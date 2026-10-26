@@ -2,14 +2,14 @@ locals {
   name            = "cc-${var.environment}-api-proxy"
   log_bucket_name = "cc-${var.aws_account_id}-${var.aws_region}-${var.environment}-api-proxy-logs"
 }
-# Public ALB: accept HTTPS, preserve the Host header, and write access logs to S3.
+# Internal ALB in the shared private subnets: CloudFront reaches it via a VPC origin; access logs go to S3.
 resource "aws_lb" "this" {
   name                       = local.name
-  internal                   = false
+  internal                   = true
   load_balancer_type         = "application"
   ip_address_type            = "ipv4"
   security_groups            = [aws_security_group.alb.id]
-  subnets                    = var.public_subnet_ids
+  subnets                    = var.alb_subnet_ids
   enable_deletion_protection = var.enable_deletion_protection
   idle_timeout               = var.idle_timeout_seconds
   preserve_host_header       = true
@@ -22,27 +22,21 @@ resource "aws_lb" "this" {
   depends_on = [aws_s3_bucket_policy.logs, aws_s3_bucket_server_side_encryption_configuration.logs, aws_s3_bucket_public_access_block.logs, aws_s3_bucket_ownership_controls.logs]
 }
 
-# Security groups: accept client HTTPS and allow only approved backends on port 9010.
-# Dedicated security group for this environment's ALB.
+# Security groups: accept HTTP only from CloudFront and allow only approved backends on port 9010.
+# CloudFront origin-facing addresses, used by the VPC origin to reach the internal ALB.
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+# Dedicated security group for this environment's ALB; the prefix list uses most of its rule quota.
 resource "aws_security_group" "alb" {
   name        = local.name
-  description = "Public HTTPS listener; HTTP backend traffic only to approved Commerce targets"
+  description = "Internal API Proxy ALB: HTTP from CloudFront; backend traffic only to approved Commerce targets"
   vpc_id      = var.vpc_id
 }
-# Allow configured client CIDRs to access HTTPS on port 443.
-resource "aws_vpc_security_group_ingress_rule" "https" {
-  for_each          = var.allowed_client_cidrs
+# Allow CloudFront (via the VPC origin) to reach the HTTP listener.
+resource "aws_vpc_security_group_ingress_rule" "cloudfront" {
   security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = each.value
-  ip_protocol       = "tcp"
-  from_port         = 443
-  to_port           = 443
-}
-# Allow HTTP on port 80 for the HTTPS redirect listener.
-resource "aws_vpc_security_group_ingress_rule" "http_redirect" {
-  for_each          = var.enable_http_redirect ? var.allowed_client_cidrs : toset([])
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = each.value
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront.id
   ip_protocol       = "tcp"
   from_port         = 80
   to_port           = 80
@@ -88,27 +82,21 @@ resource "aws_lb_target_group_attachment" "backend" {
   availability_zone = "all"
 }
 
-# Listeners and routing: HTTPS, test/docs endpoint blocks, and HTTP-to-HTTPS redirects.
-# HTTPS listener on port 443 using ACM; unmatched Host headers receive a 404 response.
-resource "aws_lb_listener" "https" {
+# Listener and routing: HTTP inside the VPC (TLS terminates at CloudFront), test/docs endpoint blocks.
+# Forward everything else; the Host header is the ALB DNS name because CloudFront does not pass the viewer Host.
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.this.arn
-  port              = 443
-  protocol          = "HTTPS"
-  certificate_arn   = var.certificate_arn
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  port              = 80
+  protocol          = "HTTP"
   default_action {
-    type = "fixed-response"
-    fixed_response {
-      content_type = "text/plain"
-      status_code  = "404"
-      message_body = "Not found"
-    }
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
   }
 }
 # These unauthenticated mock/testing endpoints must not become public via /api/*.
 # Block test endpoints before forwarding to avoid exposing test tooling publicly.
 resource "aws_lb_listener_rule" "block_testing" {
-  listener_arn = aws_lb_listener.https.arn
+  listener_arn = aws_lb_listener.http.arn
   priority     = 10
   condition {
     path_pattern { values = ["/api/test", "/api/test/*"] }
@@ -122,10 +110,10 @@ resource "aws_lb_listener_rule" "block_testing" {
     }
   }
 }
-# Block Swagger, Redoc, and OpenAPI on the public ALB when configured.
+# Block Swagger, Redoc, and OpenAPI from the public CloudFront endpoint when configured.
 resource "aws_lb_listener_rule" "block_documentation" {
   count        = var.block_documentation ? 1 : 0
-  listener_arn = aws_lb_listener.https.arn
+  listener_arn = aws_lb_listener.http.arn
   priority     = 20
   condition {
     path_pattern { values = ["/docs", "/docs/*", "/redoc", "/redoc/*", "/openapi.json"] }
@@ -139,32 +127,16 @@ resource "aws_lb_listener_rule" "block_documentation" {
     }
   }
 }
-# Forward requests to the backend only when the Host matches the API domain.
-resource "aws_lb_listener_rule" "forward" {
-  listener_arn = aws_lb_listener.https.arn
-  priority     = 100
-  condition {
-    host_header { values = [var.domain_name] }
-  }
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.backend.arn
-  }
-}
-# HTTP listener on port 80 redirects clients to HTTPS on port 443.
-resource "aws_lb_listener" "http" {
-  count             = var.enable_http_redirect ? 1 : 0
-  load_balancer_arn = aws_lb.this.arn
-  port              = 80
-  protocol          = "HTTP"
-  default_action {
-    type = "redirect"
-    redirect {
-      port        = "443"
-      protocol    = "HTTPS"
-      status_code = "HTTP_301"
-    }
-  }
+
+# Public HTTPS entry: CloudFront default certificate, VPC origin to the internal ALB, caching disabled.
+module "cloudfront" {
+  source                      = "../cloudfront-vpc-origin"
+  name                        = local.name
+  comment                     = "${local.name}: API Proxy (${var.environment})"
+  alb_arn                     = aws_lb.this.arn
+  alb_dns_name                = aws_lb.this.dns_name
+  origin_read_timeout_seconds = var.origin_read_timeout_seconds
+  price_class                 = var.cloudfront_price_class
 }
 
 # Access logs: dedicated S3 bucket, encryption, delivery policy, and retention.
@@ -301,18 +273,20 @@ resource "aws_cloudwatch_metric_alarm" "latency" {
   alarm_actions                         = local.alarm_actions
   ok_actions                            = local.alarm_actions
 }
-# Alert when the ACM certificate approaches expiration.
-resource "aws_cloudwatch_metric_alarm" "certificate_expiry" {
+# Alert when CloudFront returns a sustained share of 5xx responses to the mobile app.
+resource "aws_cloudwatch_metric_alarm" "cloudfront_5xx" {
   depends_on          = [aws_sns_topic_policy.alerts]
-  alarm_name          = "${local.name}-certificate-expiry"
-  namespace           = "AWS/CertificateManager"
-  metric_name         = "DaysToExpiry"
-  statistic           = "Minimum"
-  dimensions          = { CertificateArn = var.certificate_arn }
-  period              = 86400
-  evaluation_periods  = 1
-  comparison_operator = "LessThanThreshold"
-  threshold           = 30
+  alarm_name          = "${local.name}-cloudfront-5xx-rate"
+  alarm_description   = "${var.environment} API Proxy: CloudFront 5xxErrorRate; check ALB target health, VPC origin, and shared VPN."
+  namespace           = "AWS/CloudFront"
+  metric_name         = "5xxErrorRate"
+  statistic           = "Average"
+  dimensions          = { DistributionId = module.cloudfront.distribution_id, Region = "Global" }
+  period              = 60
+  evaluation_periods  = 3
+  datapoints_to_alarm = 2
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_actions
   ok_actions          = local.alarm_actions
