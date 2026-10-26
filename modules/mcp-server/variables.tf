@@ -66,13 +66,22 @@ variable "app_environment" {
   default     = {}
   validation {
     condition = length(setintersection(keys(var.app_environment), [
-      "SQUIRREL_CLIENT_ID", "SQUIRREL_CLIENT_SECRET", "SQUIRREL_WEBHOOK_SECRET", "GENESIS_API_PASS", "GENESIS_CASINO_ID", "COMMERCE_ENABLED_FEATURES"
+      "SQUIRREL_CLIENT_ID", "SQUIRREL_CLIENT_SECRET", "SQUIRREL_WEBHOOK_SECRET", "GENESIS_API_PASS", "GENESIS_CASINO_ID", "MCP_AUTH_PUBLIC_KEY", "COMMERCE_ENABLED_FEATURES"
     ])) == 0
-    error_message = "Vendor credentials come from Secrets Manager and COMMERCE_ENABLED_FEATURES from enabled_features; remove them from app_environment."
+    error_message = "Credentials and MCP_AUTH_PUBLIC_KEY come from Secrets Manager and COMMERCE_ENABLED_FEATURES from enabled_features; remove them from app_environment."
   }
   validation {
     condition     = lower(lookup(var.app_environment, "MCP_AUTH_ENABLED", "true")) != "false"
     error_message = "MCP_AUTH_ENABLED=false is for local development only; deployed environments must authenticate callers."
+  }
+}
+variable "auth_public_key_from_secret" {
+  description = "Inject MCP_AUTH_PUBLIC_KEY from cc-mcp/<env>/auth (key public_key) instead of using MCP_AUTH_JWKS_URL; required for HS256."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !(var.auth_public_key_from_secret && contains(keys(var.app_environment), "MCP_AUTH_JWKS_URL"))
+    error_message = "The application accepts exactly one of MCP_AUTH_JWKS_URL or MCP_AUTH_PUBLIC_KEY; remove MCP_AUTH_JWKS_URL when the key comes from the secret."
   }
 }
 variable "vendor_egress_cidrs" {

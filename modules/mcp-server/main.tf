@@ -4,23 +4,27 @@ locals {
   container_port  = 8000
   log_bucket_name = "cc-${var.aws_account_id}-${var.aws_region}-${var.environment}-mcp-logs"
   log_group_name  = "/ecs/mcp-server/${var.environment}"
-  # Secret JSON keys per vendor -> container variable names read by the application settings classes.
-  vendor_secret_keys = {
+  # Every sensitive setting of the application: secret name suffix -> { container variable = JSON key }.
+  # auth holds the pinned gateway key, which is a shared secret when Commerce signs with HS256.
+  secret_keys = {
     squirrel = { SQUIRREL_CLIENT_ID = "client_id", SQUIRREL_CLIENT_SECRET = "client_secret", SQUIRREL_WEBHOOK_SECRET = "webhook_secret" }
     genesis  = { GENESIS_API_PASS = "api_pass", GENESIS_CASINO_ID = "casino_id" }
+    auth     = { MCP_AUTH_PUBLIC_KEY = "public_key" }
   }
+  # Inject the secrets of enabled vendors, plus the auth key only when it replaces the JWKS URL.
+  injected_secrets      = concat(var.enabled_features, var.auth_public_key_from_secret ? ["auth"] : [])
   container_environment = merge(var.app_environment, { COMMERCE_ENABLED_FEATURES = join(",", var.enabled_features) })
-  container_secrets = flatten([for vendor in var.enabled_features : [
-    for variable, key in local.vendor_secret_keys[vendor] : { name = variable, valueFrom = "${aws_secretsmanager_secret.vendor[vendor].arn}:${key}::" }
+  container_secrets = flatten([for name in local.injected_secrets : [
+    for variable, key in local.secret_keys[name] : { name = variable, valueFrom = "${aws_secretsmanager_secret.vendor[name].arn}:${key}::" }
   ]])
 }
 
-# Configuration owned outside Terraform: vendor secret values and the deployed image digest.
+# Configuration owned outside Terraform: secret values and the deployed image digest.
 # Secret containers only; values are written with put-secret-value so they never reach Terraform state.
 resource "aws_secretsmanager_secret" "vendor" {
-  for_each                = local.vendor_secret_keys
+  for_each                = local.secret_keys
   name                    = "cc-mcp/${var.environment}/${each.key}"
-  description             = "MCP ${each.key} credentials for ${var.environment}. JSON keys: ${join(", ", values(each.value))}. Set outside Terraform."
+  description             = "MCP ${each.key} secrets for ${var.environment}. JSON keys: ${join(", ", values(each.value))}. Set outside Terraform."
   recovery_window_in_days = var.secret_recovery_window_days
 }
 # Deployed image digest. Terraform seeds it once; the application CI overwrites it on every release.

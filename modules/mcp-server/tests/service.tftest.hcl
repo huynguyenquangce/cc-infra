@@ -55,8 +55,8 @@ run "endpoint_and_image_from_parameter" {
 run "only_enabled_vendor_secrets_are_injected" {
   command = plan
   assert {
-    condition     = length(aws_secretsmanager_secret.vendor) == 2 && length(local.container_secrets) == 3 && alltrue([for s in local.container_secrets : startswith(s.name, "SQUIRREL_")])
-    error_message = "Both vendor secrets exist, but only Squirrel credentials are injected when only squirrel is enabled."
+    condition     = length(aws_secretsmanager_secret.vendor) == 3 && length(local.container_secrets) == 3 && alltrue([for s in local.container_secrets : startswith(s.name, "SQUIRREL_")])
+    error_message = "All three secrets exist, but only Squirrel credentials are injected when only squirrel is enabled."
   }
   assert {
     condition     = local.container_environment["COMMERCE_ENABLED_FEATURES"] == "squirrel" && !contains(keys(local.container_environment), "SQUIRREL_CLIENT_SECRET")
@@ -84,7 +84,7 @@ run "service_can_wait_for_secret_values" {
     run_service = false
   }
   assert {
-    condition     = length(aws_ecs_service.this) == 0 && length(aws_appautoscaling_target.this) == 0 && length(aws_secretsmanager_secret.vendor) == 2 && length(local.service_alarms) == 0
+    condition     = length(aws_ecs_service.this) == 0 && length(aws_appautoscaling_target.this) == 0 && length(aws_secretsmanager_secret.vendor) == 3 && length(local.service_alarms) == 0
     error_message = "run_service=false must create secrets and edge resources without starting tasks or alarming."
   }
 }
@@ -123,6 +123,32 @@ run "reject_secret_in_plain_environment" {
     app_environment = { GENESIS_API_PASS = "oops" }
   }
   expect_failures = [var.app_environment]
+}
+run "pinned_gateway_key_comes_from_the_auth_secret" {
+  command = plan
+  variables {
+    auth_public_key_from_secret = true
+    app_environment             = { MCP_AUTH_ISSUER = "https://gateway.example/", MCP_AUTH_ALGORITHMS = "HS256", SQUIRREL_BASE_URL = "https://api.squirrel.example" }
+  }
+  assert {
+    condition     = length(local.container_secrets) == 4 && contains([for s in local.container_secrets : s.name], "MCP_AUTH_PUBLIC_KEY")
+    error_message = "With auth_public_key_from_secret the pinned key must be injected from cc-mcp/<env>/auth."
+  }
+}
+run "reject_public_key_in_plain_environment" {
+  command = plan
+  variables {
+    app_environment = { MCP_AUTH_PUBLIC_KEY = "shared-hs256-key" }
+  }
+  expect_failures = [var.app_environment]
+}
+run "reject_jwks_url_together_with_secret_key" {
+  command = plan
+  variables {
+    auth_public_key_from_secret = true
+    app_environment             = { MCP_AUTH_JWKS_URL = "https://gateway.example/.well-known/jwks.json", MCP_AUTH_ISSUER = "https://gateway.example/" }
+  }
+  expect_failures = [var.auth_public_key_from_secret]
 }
 run "reject_unknown_feature" {
   command = plan

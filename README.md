@@ -677,6 +677,8 @@ revision giống hệt và rolling restart task một lần; đó là hành vi m
    aws secretsmanager put-secret-value --secret-id cc-mcp/uat/squirrel \
      --secret-string '{"client_id":"...","client_secret":"...","webhook_secret":"..."}'
    # Khi bật genesis: cc-mcp/uat/genesis với {"api_pass":"...","casino_id":"<mã của Commerce>"}
+   # Khi Commerce đưa key gateway cố định / HS256 (mcp_auth_public_key_from_secret = true, bỏ MCP_AUTH_JWKS_URL):
+   #   cc-mcp/uat/auth với {"public_key":"<key>"}
    ```
 
 7. **Env, bước 2:** `mcp_run_service = true`, apply. Kiểm tra:

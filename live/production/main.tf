@@ -47,6 +47,7 @@ module "mcp_server" {
   run_service                  = var.mcp_run_service
   enabled_features             = var.mcp_enabled_features
   app_environment              = var.mcp_app_environment
+  auth_public_key_from_secret  = var.mcp_auth_public_key_from_secret
   vendor_egress_cidrs          = var.mcp_vendor_egress_cidrs
   vpn_egress_targets           = var.mcp_vpn_egress_targets
   min_tasks                    = var.mcp_min_tasks

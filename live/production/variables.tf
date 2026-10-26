@@ -117,6 +117,11 @@ variable "mcp_app_environment" {
   type        = map(string)
   default     = {}
 }
+variable "mcp_auth_public_key_from_secret" {
+  description = "true: MCP_AUTH_PUBLIC_KEY comes from cc-mcp/<env>/auth (needed when Commerce signs with HS256); omit MCP_AUTH_JWKS_URL."
+  type        = bool
+  default     = false
+}
 variable "mcp_vendor_egress_cidrs" {
   type    = set(string)
   default = ["0.0.0.0/0"]
